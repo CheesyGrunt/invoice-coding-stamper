@@ -52,6 +52,10 @@
   #matchNote.over { display:block; background:#fbeaea; color:var(--red); border:1px solid #e9b9bb; }
   #matchNote.none { display:block; background:#f4f4f4; color:#777; border:1px solid #e2e2e2; font-weight:normal; }
   #go.warn { background:#b8860b; }
+  .mark { text-align:center; margin-top:28px; color:#999; }
+  .mark .mm { font-family:Georgia, "Times New Roman", serif; font-style:italic; font-size:15px; color:var(--gold); letter-spacing:.3px; }
+  .mark .mm::before, .mark .mm::after { content:""; display:inline-block; width:34px; height:1px; background:var(--gold); opacity:.5; vertical-align:middle; margin:0 10px; }
+  .mark .by { font-size:11.5px; margin-top:4px; letter-spacing:.4px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:2px solid var(--navy); border-radius:6px; max-width:430px; overflow:hidden; font-size:13px; background:#fff; }
@@ -121,6 +125,10 @@
     <div id="dlWrap"></div>
     <p class="hint">The download is named <b>STAMPED_&lt;original&gt;.pdf</b> &mdash; upload that file to SharePoint.</p>
   </div>
+  <footer class="mark">
+    <div class="mm">Mischief managed.</div>
+    <div class="by">Crafted by Cody Mackall &middot; Soldiers&rsquo; Angels Virtual Services</div>
+  </footer>
 </main>
 <script>
 !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"function"==typeof define&&define.amd?define(["exports"],e):e((t=t||self).PDFLib={})}(this,(function(t){"use strict";
