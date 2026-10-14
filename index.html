@@ -54,7 +54,8 @@
   #go.warn { background:#b8860b; }
   .mark { text-align:center; margin-top:28px; color:#999; }
   .mark .mm { font-family:Georgia, "Times New Roman", serif; font-style:italic; font-size:15px; color:var(--gold); letter-spacing:.3px; }
-  .mark .mm::before, .mark .mm::after { content:""; display:inline-block; width:34px; height:1px; background:var(--gold); opacity:.5; vertical-align:middle; margin:0 10px; }
+  .mark .mm { display:inline-flex; align-items:center; gap:7px; }
+  .mark .bolt { width:17px; height:17px; fill:var(--gold); }
   .mark .by { font-size:11.5px; margin-top:4px; letter-spacing:.4px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
@@ -126,7 +127,7 @@
     <p class="hint">The download is named <b>STAMPED_&lt;original&gt;.pdf</b> &mdash; upload that file to SharePoint.</p>
   </div>
   <footer class="mark">
-    <div class="mm">Mischief managed.</div>
+    <div class="mm"><svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 1.5 4.5 13.2h6.2L9.3 22.5l10.2-12.6h-6.4z"/></svg>Mischief managed.</div>
     <div class="by">Crafted by Cody Mackall &middot; Soldiers&rsquo; Angels Virtual Services</div>
   </footer>
 </main>
