@@ -59,14 +59,14 @@
   .mark .by { font-size:11.5px; margin-top:4px; letter-spacing:.4px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
-  .stampPreview { border:2px solid var(--navy); border-radius:6px; max-width:430px; overflow:hidden; font-size:13px; background:#fff; }
-  .stampPreview .pvTitle { background:var(--navy); color:#fff; font-weight:bold; padding:7px 10px; font-size:12.5px; letter-spacing:.4px; }
+  .stampPreview { border:2px solid var(--red); color:#B0101A; border-radius:6px; max-width:430px; overflow:hidden; font-size:13px; background:#fff; }
+  .stampPreview .pvTitle { background:var(--red); color:#fff; font-weight:bold; padding:7px 10px; font-size:12.5px; letter-spacing:.4px; }
   .stampPreview .pvBody { padding:8px 10px; }
-  .stampPreview .pvAlloc { font-weight:bold; color:var(--navy); margin:8px 0 2px; border-top:1px solid #ddd; padding-top:8px; }
+  .stampPreview .pvAlloc { font-weight:bold; color:var(--red); margin:8px 0 2px; border-top:1px solid #ddd; padding-top:8px; }
   .stampPreview .pvAlloc:first-child { border-top:none; margin-top:0; padding-top:0; }
   .stampPreview .pvRow { display:flex; gap:8px; padding:1.5px 0; }
   .stampPreview .pvRow .k { font-weight:bold; min-width:128px; color:#555; }
-  .stampPreview .pvTotal { border-top:2px solid var(--navy); margin-top:8px; padding-top:6px; font-weight:bold; color:var(--navy); }
+  .stampPreview .pvTotal { border-top:2px solid var(--red); margin-top:8px; padding-top:6px; font-weight:bold; color:var(--red); }
   .stampPreview .pvEmpty { display:block; padding:14px; color:#999; font-style:italic; }
   @media (max-width:560px){ .grid{ grid-template-columns:1fr; } }
 </style>
@@ -760,8 +760,10 @@
       var page = pdf.getPage(0);
       var pw = page.getWidth(), ph = page.getHeight();
 
-      var navy = PDFLib.rgb(0, 0x33 / 255, 0x4C / 255);
-      var dark = PDFLib.rgb(0x44 / 255, 0x44 / 255, 0x44 / 255);
+      var S = 0.75;               // stamp scale (smaller footprint)
+      var navy = PDFLib.rgb(0x96 / 255, 0x33 / 255, 0x38 / 255); // SA red: stamp accent
+
+      var dark = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255); // red coding text
       var white = PDFLib.rgb(1, 1, 1);
       var lightLine = PDFLib.rgb(0.78, 0.78, 0.78);
 
@@ -782,26 +784,26 @@
       }
 
       var M = 40;                 // page margin for stamp
-      var boxW = 285;
+      var boxW = 285 * S;
       var maxH = ph * 0.72;       // max stamp height per page
 
       // Pack allocation groups into pages at full size; TOTAL + approval ride on the last page.
       // Allocations are never split across pages, and type never shrinks below full size.
       var stampPages = [], cur = [];
-      function curH() { return rowsH(cur, 1); }
+      function curH() { return rowsH(cur, S); }
       allocGroups.forEach(function (g) {
-        if (cur.length && curH() + rowsH(g, 1) > maxH) { stampPages.push(cur); cur = []; }
+        if (cur.length && curH() + rowsH(g, S) > maxH) { stampPages.push(cur); cur = []; }
         cur = cur.concat(g);
       });
-      if (curH() + rowsH(tailGroup, 1) > maxH) { stampPages.push(cur); cur = []; }
+      if (curH() + rowsH(tailGroup, S) > maxH) { stampPages.push(cur); cur = []; }
       cur = cur.concat(tailGroup);
       stampPages.push(cur);
 
       stampPages.forEach(function (rows, pi) {
         var pg = pi === 0 ? page : pdf.addPage([pw, ph]);
         var continued = pi > 0;
-        var boxH = rowsH(rows, 1);
-        var m = metrics(1);
+        var boxH = rowsH(rows, S);
+        var m = metrics(S);
         var bx, by;
         if (pi === 0) {
           bx = (pos === 'tl' || pos === 'bl') ? M : pw - M - boxW;
@@ -811,31 +813,31 @@
         }
 
         // box
-        pg.drawRectangle({ x: bx, y: by, width: boxW, height: boxH, color: white, opacity: 0.55, borderColor: navy, borderWidth: 1.5 });
+        pg.drawRectangle({ x: bx, y: by, width: boxW, height: boxH, color: white, opacity: 0.55, borderColor: navy, borderWidth: 1.5 * S });
         // header
         pg.drawRectangle({ x: bx, y: by + boxH - m.headerH, width: boxW, height: m.headerH, color: navy, opacity: 0.85 });
         pg.drawText(continued ? "SOLDIERS' ANGELS - INVOICE CODING (cont.)" : "SOLDIERS' ANGELS - INVOICE CODING", {
-          x: bx + 8, y: by + boxH - m.headerH + (m.headerH - m.titleSize) / 2 + 1,
+          x: bx + 8 * S, y: by + boxH - m.headerH + (m.headerH - m.titleSize) / 2 + 1,
           size: m.titleSize, font: helvBold, color: white
         });
 
         var y = by + boxH - m.headerH - m.padT;
-        var valX = bx + 102, valMaxW = boxW - 110;
+        var valX = bx + 102 * S, valMaxW = boxW - 110 * S;
         rows.forEach(function (r) {
           if (r.t === 'ah') {
             y -= m.ahH;
-            pg.drawText('ALLOCATION ' + r.n, { x: bx + 7, y: y + 2, size: m.ahSize, font: helvBold, color: navy });
+            pg.drawText('ALLOCATION ' + r.n, { x: bx + 7 * S, y: y + 2, size: m.ahSize, font: helvBold, color: navy });
           } else if (r.t === 'div') {
             y -= m.divH;
-            pg.drawLine({ start: { x: bx + 7, y: y + m.divH / 2 }, end: { x: bx + boxW - 7, y: y + m.divH / 2 }, color: lightLine, thickness: 0.75 });
+            pg.drawLine({ start: { x: bx + 7 * S, y: y + m.divH / 2 }, end: { x: bx + boxW - 7 * S, y: y + m.divH / 2 }, color: lightLine, thickness: 0.75 });
           } else {
             y -= m.rowH;
-            pg.drawText(r.label, { x: bx + 7, y: y, size: m.labSize, font: helvBold, color: r.total ? navy : dark });
+            pg.drawText(r.label, { x: bx + 7 * S, y: y, size: m.labSize, font: helvBold, color: r.total ? navy : dark });
             if (r.value) {
               var txt = fitText(r.value, r.bold ? helvBold : helv, m.valSize, valMaxW);
               pg.drawText(txt, { x: valX, y: y, size: m.valSize, font: r.bold ? helvBold : helv, color: r.total ? navy : dark });
             } else {
-              pg.drawLine({ start: { x: valX, y: y - 1 }, end: { x: bx + boxW - 8, y: y - 1 }, color: lightLine, thickness: 0.75 });
+              pg.drawLine({ start: { x: valX, y: y - 1 }, end: { x: bx + boxW - 8 * S, y: y - 1 }, color: lightLine, thickness: 0.75 });
             }
           }
         });
