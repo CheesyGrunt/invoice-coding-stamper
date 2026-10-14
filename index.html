@@ -712,9 +712,9 @@
         }
 
         // box
-        pg.drawRectangle({ x: bx, y: by, width: boxW, height: boxH, color: white, borderColor: navy, borderWidth: 1.5 });
+        pg.drawRectangle({ x: bx, y: by, width: boxW, height: boxH, color: white, opacity: 0.55, borderColor: navy, borderWidth: 1.5 });
         // header
-        pg.drawRectangle({ x: bx, y: by + boxH - m.headerH, width: boxW, height: m.headerH, color: navy });
+        pg.drawRectangle({ x: bx, y: by + boxH - m.headerH, width: boxW, height: m.headerH, color: navy, opacity: 0.85 });
         pg.drawText(continued ? "SOLDIERS' ANGELS - INVOICE CODING (cont.)" : "SOLDIERS' ANGELS - INVOICE CODING", {
           x: bx + 8, y: by + boxH - m.headerH + (m.headerH - m.titleSize) / 2 + 1,
           size: m.titleSize, font: helvBold, color: white
