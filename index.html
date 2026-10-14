@@ -61,6 +61,9 @@
   .stampPreview .pvGrid th { font-family:Georgia, "Times New Roman", serif; text-align:left; font-weight:bold; padding:2px 8px 2px 0; white-space:nowrap; }
   .stampPreview .pvGrid td { border-bottom:1px solid #d77; min-width:110px; padding:2px 6px; }
   .stampPreview .pvGrid td.b { font-weight:bold; }
+  .pvWrap { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
+  #placeWrap { text-align:center; }
+  #placeThumb { width:170px; border:1px solid #ccc; box-shadow:0 1px 4px rgba(0,0,0,.12); background:#fff; display:block; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -113,15 +116,22 @@
   </div>
   <div class="card">
     <h2>4. Stamp preview</h2>
-    <div id="preview" class="stampPreview"><span class="pvEmpty">Your stamp preview will appear here once you add an allocation.</span></div>
+    <div class="pvWrap">
+      <div id="preview" class="stampPreview"><span class="pvEmpty">Your stamp preview will appear here once you add an allocation.</span></div>
+      <div id="placeWrap" style="display:none">
+        <canvas id="placeThumb"></canvas>
+        <div class="hint" id="placeNote" style="margin-top:4px">Where it&rsquo;ll land</div>
+      </div>
+    </div>
   </div>
   <div class="card">
     <h2>5. Stamp placement (first page)</h2>
     <div class="posrow">
+      <label><input type="radio" name="pos" value="auto" checked> <b>Best spot (auto)</b></label>
       <label><input type="radio" name="pos" value="tr"> Top right</label>
       <label><input type="radio" name="pos" value="tl"> Top left</label>
       <label><input type="radio" name="pos" value="br"> Bottom right</label>
-      <label><input type="radio" name="pos" value="bl" checked> Bottom left</label>
+      <label><input type="radio" name="pos" value="bl"> Bottom left</label>
     </div>
   </div>
   <div class="card">
@@ -135,6 +145,7 @@
     <div class="by">Crafted by Cody Mackall &middot; Soldiers&rsquo; Angels Virtual Services</div>
   </footer>
 </main>
+<script src="vendor/pdf.min.js"></script>
 <script>
 !function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"function"==typeof define&&define.amd?define(["exports"],e):e((t=t||self).PDFLib={})}(this,(function(t){"use strict";
 /*! *****************************************************************************
@@ -463,6 +474,105 @@
     return candidates[0].amount;
   }
 
+  // ---- Stamp geometry (shared by the PDF stamp, the placement finder, and the thumbnail) ----
+  var G = { M: 36, ROW: 13, LAB: 9, VAL: 8.5, PAD: 5, GAP: 7, labW: 82, colSplit: 92, colSingle: 126, COLS: 3 };
+  function stampDims(n) {
+    var split = n > 1, cols = Math.min(n, G.COLS), blocks = Math.ceil(n / G.COLS);
+    var h = blocks * 5 * G.ROW + (blocks - 1) * G.GAP + G.GAP / 2 + ((split ? 1 : 0) + 2) * G.ROW;
+    return { w: G.labW + cols * (split ? G.colSplit : G.colSingle), h: h };
+  }
+  function cornerSpot(pos, w, h, pw, ph) {
+    return { x: (pos === 'tl' || pos === 'bl') ? G.M : pw - G.M - w,
+             y: (pos === 'bl' || pos === 'br') ? G.M : ph - G.M - h };
+  }
+
+  // ---- Page analysis for "Best spot": render page 1, map where the ink is ----
+  var pageScan = null; // { W, H, pw, ph, integral:Uint32Array, canvas }
+  if (typeof pdfjsLib !== 'undefined') {
+    try { pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; } catch (e) {}
+  }
+  function scanPage(buf) {
+    pageScan = null;
+    if (typeof pdfjsLib === 'undefined') return Promise.resolve(null);
+    var data = new Uint8Array(buf.slice(0));
+    return pdfjsLib.getDocument({ data: data }).promise.then(function (doc) {
+      return doc.getPage(1);
+    }).then(function (page) {
+      var base = page.getViewport({ scale: 1 });
+      var scale = 600 / Math.max(base.width, base.height); // ~600px on the long side
+      var vp = page.getViewport({ scale: scale });
+      var c = document.createElement('canvas');
+      c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
+        var W = c.width, H = c.height, px = ctx.getImageData(0, 0, W, H).data;
+        // integral image of "ink" pixels (dark enough to matter; ignores light watermarks / scan speckle)
+        var I = new Uint32Array((W + 1) * (H + 1));
+        for (var y = 0; y < H; y++) {
+          var row = 0;
+          for (var x = 0; x < W; x++) {
+            var k = (y * W + x) * 4;
+            var lum = 0.299 * px[k] + 0.587 * px[k + 1] + 0.114 * px[k + 2];
+            row += lum < 185 ? 1 : 0;
+            I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row;
+          }
+        }
+        pageScan = { W: W, H: H, pw: base.width, ph: base.height, integral: I, canvas: c };
+        return pageScan;
+      });
+    }).catch(function (e) { console.warn('Page scan failed; Best spot will use bottom left.', e); pageScan = null; return null; });
+  }
+  // Returns {x,y} (PDF points, bottom-left origin) for a w x h stamp on a pw x ph page
+  function bestSpot(w, h, pw, ph) {
+    var fallback = cornerSpot('bl', w, h, pw, ph);
+    if (!pageScan) return fallback;
+    var S = pageScan, sx = S.W / pw, sy = S.H / ph, P = G.PAD;
+    var xMax = pw - G.M - w, yMax = ph - G.M - h;
+    if (xMax < G.M || yMax < G.M) return fallback;
+    function ink(x, y) { // box incl. padding, converted to canvas coords (top-left origin)
+      var x0 = Math.max(0, Math.floor((x - P) * sx)), x1 = Math.min(S.W, Math.ceil((x + w + P) * sx));
+      var y0 = Math.max(0, Math.floor((ph - (y + h + P)) * sy)), y1 = Math.min(S.H, Math.ceil((ph - (y - P)) * sy));
+      var R = S.W + 1, I = S.integral;
+      var sum = I[y1 * R + x1] - I[y0 * R + x1] - I[y1 * R + x0] + I[y0 * R + x0];
+      return sum / Math.max(1, (x1 - x0) * (y1 - y0));
+    }
+    var best = null, step = 4;
+    for (var y = G.M; y <= yMax; y += step) {
+      for (var x = G.M; x <= xMax; x += step) {
+        // emptiest wins; small nudges toward the bottom of the page and toward a side edge
+        var edge = Math.min(x - G.M, xMax - x) / pw;
+        var cost = ink(x, y) + 0.02 * (y / ph) + 0.006 * edge;
+        if (!best || cost < best.cost) best = { x: x, y: y, cost: cost };
+      }
+    }
+    return best ? { x: best.x, y: best.y } : fallback;
+  }
+  function currentPos() {
+    var r = document.querySelector('input[name="pos"]:checked');
+    return r ? r.value : 'auto';
+  }
+
+  // Thumbnail of page 1 with a red box where the stamp will land
+  var placeWrap = document.getElementById('placeWrap');
+  var placeThumb = document.getElementById('placeThumb');
+  var placeNote = document.getElementById('placeNote');
+  function drawPlacement(n) {
+    if (!pageScan || !n) { placeWrap.style.display = 'none'; return; }
+    var S = pageScan, d = stampDims(n), pos = currentPos();
+    if (d.h > S.ph * 0.72) { placeWrap.style.display = 'none'; return; } // multi-page stamp: skip thumb
+    var spot = pos === 'auto' ? bestSpot(d.w, d.h, S.pw, S.ph) : cornerSpot(pos, d.w, d.h, S.pw, S.ph);
+    placeThumb.width = S.W; placeThumb.height = S.H;
+    var ctx = placeThumb.getContext('2d');
+    ctx.drawImage(S.canvas, 0, 0);
+    var sx = S.W / S.pw, sy = S.H / S.ph, P = G.PAD;
+    var rx = (spot.x - P) * sx, ry = (S.ph - (spot.y + d.h + P)) * sy, rw = (d.w + 2 * P) * sx, rh = (d.h + 2 * P) * sy;
+    ctx.fillStyle = 'rgba(176,16,26,0.18)'; ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = '#B0101A'; ctx.lineWidth = 3; ctx.strokeRect(rx, ry, rw, rh);
+    placeNote.textContent = pos === 'auto' ? 'Best spot (auto) – where it’ll land' : 'Where it’ll land';
+    placeWrap.style.display = '';
+  }
+
   function invoiceTotal() {
     var v = parseAmount(invTotalInput.value);
     return isNaN(v) ? null : v;
@@ -513,6 +623,7 @@
     renderMatch();
     // Mirrors the PDF stamp: labels once on the left, one value column per allocation
     var list = currentList();
+    drawPlacement(list.length);
     if (!list.length) {
       preview.innerHTML = '<span class="pvEmpty">Your stamp preview will appear here once you add an allocation.</span>';
       return;
@@ -657,6 +768,8 @@
       setDetectNote('');
       renderAllocList();
       setStatus('Invoice loaded. Add your allocation(s), then stamp it.');
+      placeWrap.style.display = 'none';
+      scanPage(fileBuf).then(function () { renderPreview(); });
       // Hunt for the invoice total in the background; pre-fill Amount (never clobbers typing)
       PDFLib.PDFDocument.load(fileBuf, { ignoreEncryption: true }).then(function (pdf) {
         return detectInvoiceTotal(pdf);
@@ -763,14 +876,8 @@
       var red = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255);
       var white = PDFLib.rgb(1, 1, 1);
 
-      var M = 36;                       // page margin
-      var ROW = 13;                     // line height (pt)
-      var LAB = 9;                      // label size (Times Bold, like the rubber stamp)
-      var VAL = 8.5;                    // value size
-      var PAD = 5;                      // backing padding
-      var BLOCK_GAP = 7;
-      var labW = 82;
-      var colW = isSplit ? 92 : 126;    // single stamp ~2.9in wide, matches the physical stamp
+      var M = G.M, ROW = G.ROW, LAB = G.LAB, VAL = G.VAL, PAD = G.PAD, BLOCK_GAP = G.GAP, labW = G.labW;
+      var colW = isSplit ? G.colSplit : G.colSingle; // single stamp ~2.9in wide, matches the physical stamp
       var nCols = Math.min(list.length, COLS_PER_BLOCK);
       var boxW = labW + nCols * colW;
 
@@ -807,8 +914,8 @@
         if (pi > 0) h += ROW; // "(continued)" line
         var bx, by;
         if (pi === 0) {
-          bx = (pos === 'tl' || pos === 'bl') ? M : pw - M - boxW;
-          by = (pos === 'bl' || pos === 'br') ? M : ph - M - h;
+          var spot = pos === 'auto' ? bestSpot(boxW, h, pw, ph) : cornerSpot(pos, boxW, h, pw, ph);
+          bx = spot.x; by = spot.y;
         } else { bx = M; by = ph - M - h; }
 
         // light see-through backing so the stamp reads over busy invoices
