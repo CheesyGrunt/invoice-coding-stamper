@@ -64,6 +64,10 @@
   .pvWrap { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
   #placeWrap { text-align:center; }
   #placeThumb { width:170px; border:1px solid #ccc; box-shadow:0 1px 4px rgba(0,0,0,.12); background:#fff; display:block; }
+  .apprItem { border:1px solid #e3e3e3; border-left:4px solid var(--red); border-radius:8px; padding:10px 12px; margin-top:12px; }
+  .apprItem .ttl { font-size:13.5px; font-weight:bold; color:var(--navy); margin-bottom:6px; }
+  .apprItem .same { font-size:13.5px; display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .apprItem .grid { margin-top:10px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -111,8 +115,10 @@
     <p class="hint">Leave any coding line blank you don't need &mdash; it'll print as an empty line you can fill in by hand. Amount is required on every allocation.</p>
   </div>
   <div class="card">
-    <h2>3. Approval &mdash; once per stamp</h2>
+    <h2>3. Approval</h2>
+    <div class="hint" id="apprMainNote" style="margin:-4px 0 8px; display:none"></div>
     <div class="grid" id="approvalFields"></div>
+    <div id="extraApprovals"></div>
   </div>
   <div class="card">
     <h2>4. Stamp preview</h2>
@@ -125,7 +131,12 @@
     </div>
   </div>
   <div class="card">
-    <h2>5. Stamp placement (first page)</h2>
+    <h2>5. Stamp placement</h2>
+    <div id="pageRow" class="posrow" style="display:none; margin-bottom:12px; align-items:center;">
+      <label for="pageSel" style="cursor:default"><b>Put the stamp on page</b></label>
+      <select id="pageSel" style="padding:6px 8px; font-size:14px; border:1px solid #ccc; border-radius:6px;"></select>
+      <span id="pageOf" class="hint" style="margin:0"></span>
+    </div>
     <div class="posrow">
       <label><input type="radio" name="pos" value="auto" checked> <b>Best spot (auto)</b></label>
       <label><input type="radio" name="pos" value="tr"> Top right</label>
@@ -476,9 +487,10 @@
 
   // ---- Stamp geometry (shared by the PDF stamp, the placement finder, and the thumbnail) ----
   var G = { M: 36, ROW: 13, LAB: 9, VAL: 8.5, PAD: 5, GAP: 7, labW: 82, colSplit: 92, colSingle: 126, COLS: 3 };
-  function stampDims(n) {
+  function stampDims(n, perCol) {
     var split = n > 1, cols = Math.min(n, G.COLS), blocks = Math.ceil(n / G.COLS);
-    var h = blocks * 5 * G.ROW + (blocks - 1) * G.GAP + G.GAP / 2 + ((split ? 1 : 0) + 2) * G.ROW;
+    var tail = (split ? 1 : 0) + (perCol ? 0 : 2);
+    var h = blocks * (perCol ? 7 : 5) * G.ROW + (blocks - 1) * G.GAP + (tail ? G.GAP / 2 + tail * G.ROW : 0);
     return { w: G.labW + cols * (split ? G.colSplit : G.colSingle), h: h };
   }
   function cornerSpot(pos, w, h, pw, ph) {
@@ -488,16 +500,39 @@
 
   // ---- Page analysis for "Best spot": render page 1, map where the ink is ----
   var pageScan = null; // { W, H, pw, ph, integral:Uint32Array, canvas }
+  var pdfDoc = null, stampPageNum = 1, scanToken = 0;
+  var pageRow = document.getElementById('pageRow'), pageSel = document.getElementById('pageSel'), pageOf = document.getElementById('pageOf');
+  pageSel.addEventListener('change', function () {
+    stampPageNum = parseInt(pageSel.value, 10) || 1;
+    renderPage(stampPageNum).then(function () { renderPreview(); });
+  });
   if (typeof pdfjsLib !== 'undefined') {
     try { pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; } catch (e) {}
   }
   function scanPage(buf) {
-    pageScan = null;
+    pageScan = null; pdfDoc = null; stampPageNum = 1;
+    pageRow.style.display = 'none';
     if (typeof pdfjsLib === 'undefined') return Promise.resolve(null);
     var data = new Uint8Array(buf.slice(0));
+    var myToken = ++scanToken;
     return pdfjsLib.getDocument({ data: data }).promise.then(function (doc) {
-      return doc.getPage(1);
-    }).then(function (page) {
+      if (myToken !== scanToken) return null;
+      pdfDoc = doc;
+      pageSel.innerHTML = '';
+      for (var i = 1; i <= doc.numPages; i++) {
+        var o = document.createElement('option'); o.value = i; o.textContent = i; pageSel.appendChild(o);
+      }
+      pageSel.value = '1';
+      pageOf.textContent = 'of ' + doc.numPages;
+      pageRow.style.display = doc.numPages > 1 ? '' : 'none';
+      return renderPage(1);
+    }).catch(function (e) { console.warn('Page scan failed; Best spot will use bottom left.', e); pageScan = null; return null; });
+  }
+  function renderPage(num) {
+    pageScan = null;
+    if (!pdfDoc) return Promise.resolve(null);
+    var myToken = scanToken;
+    return pdfDoc.getPage(num).then(function (page) {
       var base = page.getViewport({ scale: 1 });
       var scale = 600 / Math.max(base.width, base.height); // ~600px on the long side
       var vp = page.getViewport({ scale: scale });
@@ -518,10 +553,11 @@
             I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row;
           }
         }
+        if (myToken !== scanToken || num !== stampPageNum) return null; // a newer file/page took over
         pageScan = { W: W, H: H, pw: base.width, ph: base.height, integral: I, canvas: c };
         return pageScan;
       });
-    }).catch(function (e) { console.warn('Page scan failed; Best spot will use bottom left.', e); pageScan = null; return null; });
+    }).catch(function (e) { console.warn('Page render failed; Best spot will use bottom left.', e); pageScan = null; return null; });
   }
   // Returns {x,y} (PDF points, bottom-left origin) for a w x h stamp on a pw x ph page
   function bestSpot(w, h, pw, ph) {
@@ -557,9 +593,9 @@
   var placeWrap = document.getElementById('placeWrap');
   var placeThumb = document.getElementById('placeThumb');
   var placeNote = document.getElementById('placeNote');
-  function drawPlacement(n) {
+  function drawPlacement(n, perCol) {
     if (!pageScan || !n) { placeWrap.style.display = 'none'; return; }
-    var S = pageScan, d = stampDims(n), pos = currentPos();
+    var S = pageScan, d = stampDims(n, perCol), pos = currentPos();
     if (d.h > S.ph * 0.72) { placeWrap.style.display = 'none'; return; } // multi-page stamp: skip thumb
     var spot = pos === 'auto' ? bestSpot(d.w, d.h, S.pw, S.ph) : cornerSpot(pos, d.w, d.h, S.pw, S.ph);
     placeThumb.width = S.W; placeThumb.height = S.H;
@@ -569,8 +605,79 @@
     var rx = (spot.x - P) * sx, ry = (S.ph - (spot.y + d.h + P)) * sy, rw = (d.w + 2 * P) * sx, rh = (d.h + 2 * P) * sy;
     ctx.fillStyle = 'rgba(176,16,26,0.18)'; ctx.fillRect(rx, ry, rw, rh);
     ctx.strokeStyle = '#B0101A'; ctx.lineWidth = 3; ctx.strokeRect(rx, ry, rw, rh);
-    placeNote.textContent = pos === 'auto' ? 'Best spot (auto) – where it’ll land' : 'Where it’ll land';
+    placeNote.textContent = (pos === 'auto' ? 'Best spot (auto) – w' : 'W') + 'here it’ll land' +
+      (pdfDoc && pdfDoc.numPages > 1 ? ' (page ' + stampPageNum + ')' : '');
     placeWrap.style.display = '';
+  }
+
+  // ---- Approvals: one approver by default; each extra charge budget can have its own ----
+  var extraApprovals = document.getElementById('extraApprovals');
+  var apprMainNote = document.getElementById('apprMainNote');
+  var approvers = {};     // budgetKey -> { same:true, name:'', date:'yyyy-mm-dd' }
+  var apprSig = null;
+  function todayIso() {
+    var d = new Date();
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+  function budgetKey(a) { return String(a.chargeBudget || '').trim().toLowerCase(); }
+  function budgetGroups(list) {
+    var seen = {}, out = [];
+    list.forEach(function (a) {
+      var k = budgetKey(a);
+      if (!seen[k]) { seen[k] = true; out.push({ key: k, label: String(a.chargeBudget || '').trim() || '(no charge budget)' }); }
+    });
+    return out;
+  }
+  function mainApproval() {
+    return { name: approvalInputs.approvedBy.value.trim(), date: fmtDate(approvalInputs.date.value) };
+  }
+  // The approval that applies to one allocation
+  function approvalFor(a, groups) {
+    var k = budgetKey(a);
+    if (!groups.length || groups[0].key === k) return mainApproval();
+    var st = approvers[k];
+    if (!st || st.same) return mainApproval();
+    return { name: st.name.trim(), date: fmtDate(st.date) };
+  }
+  function needsPerColumn(list) {
+    var groups = budgetGroups(list);
+    return groups.slice(1).some(function (g) { return approvers[g.key] && !approvers[g.key].same; });
+  }
+  function renderApprovals(list) {
+    var groups = budgetGroups(list);
+    var sig = groups.map(function (g) { return g.key; }).join('\u0001');
+    if (groups.length > 1) {
+      apprMainNote.style.display = '';
+      apprMainNote.innerHTML = 'Approver for <b>' + esc(groups[0].label) + '</b> (and any budget marked &ldquo;same&rdquo; below).';
+    } else {
+      apprMainNote.style.display = 'none';
+    }
+    if (sig === apprSig) return;   // budgets unchanged: keep the boxes as they are (don't wipe typing)
+    apprSig = sig;
+    extraApprovals.innerHTML = '';
+    groups.slice(1).forEach(function (g) {
+      var st = approvers[g.key] || (approvers[g.key] = { same: true, name: '', date: todayIso() });
+      var box = document.createElement('div');
+      box.className = 'apprItem';
+      box.innerHTML =
+        '<div class="ttl">Charge Budget: ' + esc(g.label) + '</div>' +
+        '<label class="same"><input type="checkbox"' + (st.same ? ' checked' : '') + '> Same approver as above</label>' +
+        '<div class="grid"' + (st.same ? ' style="display:none"' : '') + '>' +
+          '<label class="field"><span>Approved By</span><input type="text" class="apName"></label>' +
+          '<label class="field"><span>Date</span><input type="date" class="apDate"></label>' +
+        '</div>';
+      var cb = box.querySelector('input[type=checkbox]'), grid = box.querySelector('.grid');
+      var nm = box.querySelector('.apName'), dt = box.querySelector('.apDate');
+      nm.value = st.name; dt.value = st.date;
+      cb.addEventListener('change', function () {
+        st.same = cb.checked; grid.style.display = st.same ? 'none' : '';
+        if (!st.same) nm.focus();
+        renderPreview();
+      });
+      nm.addEventListener('input', function () { st.name = nm.value; renderPreview(); });
+      dt.addEventListener('input', function () { st.date = dt.value; renderPreview(); });
+      extraApprovals.appendChild(box);
+    });
   }
 
   function invoiceTotal() {
@@ -623,7 +730,9 @@
     renderMatch();
     // Mirrors the PDF stamp: labels once on the left, one value column per allocation
     var list = currentList();
-    drawPlacement(list.length);
+    renderApprovals(list);
+    var groups = budgetGroups(list), perCol = needsPerColumn(list);
+    drawPlacement(list.length, perCol);
     if (!list.length) {
       preview.innerHTML = '<span class="pvEmpty">Your stamp preview will appear here once you add an allocation.</span>';
       return;
@@ -642,13 +751,22 @@
         });
         html += '</tr>';
       });
+      if (perCol) {
+        [['Approved by:', 'name'], ['Date:', 'date']].forEach(function (r) {
+          html += '<tr><th>' + r[0] + '</th>';
+          blk.forEach(function (a) { var v = approvalFor(a, groups)[r[1]]; html += '<td>' + (v ? esc(v) : '&nbsp;') + '</td>'; });
+          html += '</tr>';
+        });
+      }
       html += '</table>';
     }
     var span = Math.min(list.length, 3);
     html += '<table class="pvGrid pvTail">';
     if (list.length > 1) html += '<tr><th>Total:</th><td class="b" colspan="' + span + '">' + fmtMoney(allocTotalAmount(list)) + '</td></tr>';
-    html += '<tr><th>Approved by:</th><td colspan="' + span + '">' + (esc(approvalInputs.approvedBy.value.trim()) || '&nbsp;') + '</td></tr>';
-    html += '<tr><th>Date:</th><td colspan="' + span + '">' + (esc(fmtDate(approvalInputs.date.value)) || '&nbsp;') + '</td></tr>';
+    if (!perCol) {
+      html += '<tr><th>Approved by:</th><td colspan="' + span + '">' + (esc(approvalInputs.approvedBy.value.trim()) || '&nbsp;') + '</td></tr>';
+      html += '<tr><th>Date:</th><td colspan="' + span + '">' + (esc(fmtDate(approvalInputs.date.value)) || '&nbsp;') + '</td></tr>';
+    }
     html += '</table>';
     preview.innerHTML = html;
   }
@@ -760,6 +878,7 @@
       drop.classList.add('has-file');
       goBtn.disabled = false;
       // New invoice: start fresh so old allocations/coding can't leak onto it
+      approvers = {}; apprSig = null; extraApprovals.innerHTML = '';
       allocations = [];
       clearAllocForm();
       detectedTotal = null;
@@ -838,6 +957,9 @@
 
     var approvedBy = clean(approvalInputs.approvedBy.value.trim());
     var dateStr = clean(fmtDate(approvalInputs.date.value));
+    var apprGroups = budgetGroups(list), perCol = needsPerColumn(list);
+    list = list.map(function (a) { var ap = approvalFor(a, apprGroups); return Object.assign({}, a, { _apName: clean(ap.name), _apDate: clean(ap.date) }); });
+    var targetPage = Math.max(0, (stampPageNum || 1) - 1);
     var pos = document.querySelector('input[name="pos"]:checked').value;
 
     setStatus('Stamping…');
@@ -870,7 +992,8 @@
       ]);
     }).then(function (res) {
       var pdf = res[0], helv = res[1], helvBold = res[2], timesBold = res[3];
-      var page = pdf.getPage(0);
+      if (targetPage >= pdf.getPageCount()) targetPage = 0;
+      var page = pdf.getPage(targetPage);
       var pw = page.getWidth(), ph = page.getHeight();
 
       var red = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255);
@@ -887,8 +1010,8 @@
         while (t.length > 1 && font.widthOfTextAtSize(t + '...', size) > maxW) t = t.slice(0, -1);
         return t + '...';
       }
-      function blockH() { return LABELS.length * ROW; }
-      var tailRows = (isSplit ? 1 : 0) + 2;   // Total (splits only), Approved by, Date
+      function blockH() { return (LABELS.length + (perCol ? 2 : 0)) * ROW; }
+      var tailRows = (isSplit ? 1 : 0) + (perCol ? 0 : 2);   // Total (splits only); shared Approved by + Date unless per-budget
 
       // Paginate blocks if a huge split would run off the page
       var maxH = ph * 0.72, stampPages = [], cur = [], curH = 0;
@@ -906,11 +1029,11 @@
       }
 
       stampPages.forEach(function (pBlocks, pi) {
-        var pg = pi === 0 ? page : pdf.addPage([pw, ph]);
+        var pg = pi === 0 ? page : pdf.insertPage(targetPage + pi, [pw, ph]);
         var last = pi === stampPages.length - 1;
         var h = 0;
         pBlocks.forEach(function (b, k) { h += blockH() + (k ? BLOCK_GAP : 0); });
-        if (last) h += BLOCK_GAP / 2 + tailRows * ROW;
+        if (last && tailRows) h += BLOCK_GAP / 2 + tailRows * ROW;
         if (pi > 0) h += ROW; // "(continued)" line
         var bx, by;
         if (pi === 0) {
@@ -932,13 +1055,22 @@
               drawCell(pg, cellVal(a, L.key), bx + labW + c * colW, y + 2, colW, L.key === 'amount');
             });
           });
+          if (perCol) {
+            [['Approved by:', '_apName'], ['Date:', '_apDate']].forEach(function (r) {
+              y -= ROW;
+              drawLabel(pg, r[0], bx, y + 2);
+              b.forEach(function (a, c) { drawCell(pg, a[r[1]], bx + labW + c * colW, y + 2, colW); });
+            });
+          }
         });
-        if (last) {
+        if (last && tailRows) {
           y -= BLOCK_GAP / 2;
           var spanW = boxW - labW;
           if (isSplit) { y -= ROW; drawLabel(pg, 'Total:', bx, y + 2); drawCell(pg, fmtMoney(allocTotalAmount(list)), bx + labW, y + 2, spanW, true); }
-          y -= ROW; drawLabel(pg, 'Approved by:', bx, y + 2); drawCell(pg, approvedBy, bx + labW, y + 2, spanW);
-          y -= ROW; drawLabel(pg, 'Date:', bx, y + 2); drawCell(pg, dateStr, bx + labW, y + 2, spanW);
+          if (!perCol) {
+            y -= ROW; drawLabel(pg, 'Approved by:', bx, y + 2); drawCell(pg, approvedBy, bx + labW, y + 2, spanW);
+            y -= ROW; drawLabel(pg, 'Date:', bx, y + 2); drawCell(pg, dateStr, bx + labW, y + 2, spanW);
+          }
         }
       });
       stampPageCount = stampPages.length;
