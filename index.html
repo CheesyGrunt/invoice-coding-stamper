@@ -57,9 +57,13 @@
   .mark .mm { display:inline-flex; align-items:center; gap:7px; }
   .mark .bolt { width:17px; height:17px; fill:var(--gold); }
   .mark .by { font-size:11.5px; margin-top:4px; letter-spacing:.4px; }
+  .stampPreview .pvGrid { border-collapse:collapse; color:#B0101A; font-size:12.5px; margin-bottom:6px; }
+  .stampPreview .pvGrid th { font-family:Georgia, "Times New Roman", serif; text-align:left; font-weight:bold; padding:2px 8px 2px 0; white-space:nowrap; }
+  .stampPreview .pvGrid td { border-bottom:1px solid #d77; min-width:110px; padding:2px 6px; }
+  .stampPreview .pvGrid td.b { font-weight:bold; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
-  .stampPreview { border:2px solid var(--red); color:#B0101A; border-radius:6px; max-width:430px; overflow:hidden; font-size:13px; background:#fff; }
+  .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
   .stampPreview .pvTitle { background:var(--red); color:#fff; font-weight:bold; padding:7px 10px; font-size:12.5px; letter-spacing:.4px; }
   .stampPreview .pvBody { padding:8px 10px; }
   .stampPreview .pvAlloc { font-weight:bold; color:var(--red); margin:8px 0 2px; border-top:1px solid #ddd; padding-top:8px; }
@@ -507,38 +511,35 @@
 
   function renderPreview() {
     renderMatch();
-    // Live preview: saved allocations + whatever is currently typed in the form
-    var list = allocations.slice();
-    var pending = readAllocForm();
-    if (pending.alloc) list.push(pending.alloc);
+    // Mirrors the PDF stamp: labels once on the left, one value column per allocation
+    var list = currentList();
     if (!list.length) {
       preview.innerHTML = '<span class="pvEmpty">Your stamp preview will appear here once you add an allocation.</span>';
       return;
     }
-    var approvedBy = approvalInputs.approvedBy.value.trim();
-    var dateStr = fmtDate(approvalInputs.date.value);
-    var html = '<div class="pvTitle">SOLDIERS&rsquo; ANGELS &ndash; INVOICE CODING</div><div class="pvBody">';
-    list.forEach(function (a, i) {
-      html += '<div class="pvAlloc">ALLOCATION ' + (i + 1) + '</div>';
-      html += pvRow('Amount', fmtMoney(a.amount), true);
-      html += pvRow('Accounting Code', a.acctCode);
-      html += pvRow('Accounting Class', a.acctClass);
-      html += pvRow('Charge Budget', a.chargeBudget);
-      html += pvRow('Restricted Funds', a.restricted);
-    });
-    html += '<div class="pvTotal"><div class="pvRow"><span class="k">TOTAL</span><span>' + fmtMoney(allocTotalAmount(list)) + '</span></div></div>';
-    if (approvedBy || dateStr) {
-      html += pvRow('Approved By', approvedBy);
-      html += pvRow('Date', dateStr);
+    var rows = [['Amount:', 'amount'], ['Accounting Code:', 'acctCode'], ['Accounting Class:', 'acctClass'],
+                ['Charge Budget:', 'chargeBudget'], ['Restricted Funds:', 'restricted']];
+    var html = '';
+    for (var b = 0; b < list.length; b += 3) {
+      var blk = list.slice(b, b + 3);
+      html += '<table class="pvGrid">';
+      rows.forEach(function (r) {
+        html += '<tr><th>' + r[0] + '</th>';
+        blk.forEach(function (a) {
+          var v = r[1] === 'amount' ? fmtMoney(a.amount) : a[r[1]];
+          html += '<td' + (r[1] === 'amount' ? ' class="b"' : '') + '>' + (v ? esc(v) : '&nbsp;') + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</table>';
     }
-    html += '</div>';
+    var span = Math.min(list.length, 3);
+    html += '<table class="pvGrid pvTail">';
+    if (list.length > 1) html += '<tr><th>Total:</th><td class="b" colspan="' + span + '">' + fmtMoney(allocTotalAmount(list)) + '</td></tr>';
+    html += '<tr><th>Approved by:</th><td colspan="' + span + '">' + (esc(approvalInputs.approvedBy.value.trim()) || '&nbsp;') + '</td></tr>';
+    html += '<tr><th>Date:</th><td colspan="' + span + '">' + (esc(fmtDate(approvalInputs.date.value)) || '&nbsp;') + '</td></tr>';
+    html += '</table>';
     preview.innerHTML = html;
-  }
-
-  function pvRow(label, value, bold) {
-    var v = value ? esc(value) : '<span style="color:#bbb">—</span>';
-    return '<div class="pvRow"' + (bold ? ' style="font-weight:bold"' : '') + '><span class="k">' +
-      esc(label) + '</span><span>' + v + '</span></div>';
   }
 
   function renderAllocList() {
@@ -730,117 +731,108 @@
     goBtn.disabled = true;
     var stampPageCount = 1;
 
-    // --- stamp layout model: one group per allocation, paginated if many ---
-    var allocGroups = list.map(function (a, i) {
-      return [
-        { t: 'ah', n: i + 1 },
-        { t: 'row', label: 'Amount', value: fmtMoney(a.amount), bold: true },
-        { t: 'row', label: 'Accounting Code', value: clean(a.acctCode) },
-        { t: 'row', label: 'Accounting Class', value: clean(a.acctClass) },
-        { t: 'row', label: 'Charge Budget', value: clean(a.chargeBudget) },
-        { t: 'row', label: 'Restricted Funds', value: clean(a.restricted) },
-        { t: 'div' }
-      ];
-    });
-    var tailGroup = [
-      { t: 'row', label: 'TOTAL', value: fmtMoney(allocTotalAmount(list)), bold: true, total: true },
-      { t: 'div' },
-      { t: 'row', label: 'Approved By', value: approvedBy },
-      { t: 'row', label: 'Date', value: dateStr }
+    // --- stamp layout: one compact stamp, sized like the physical rubber stamp ---
+    // Labels down the left once; each allocation gets its own value column, so a split
+    // is ONE stamp (no second stamp jammed next to the first). Up to 3 columns per block;
+    // more allocations wrap into another block underneath.
+    var COLS_PER_BLOCK = 3;
+    var LABELS = [
+      { key: 'amount', label: 'Amount:' },
+      { key: 'acctCode', label: 'Accounting Code:' },
+      { key: 'acctClass', label: 'Accounting Class:' },
+      { key: 'chargeBudget', label: 'Charge Budget:' },
+      { key: 'restricted', label: 'Restricted Funds:' }
     ];
+    function cellVal(a, key) { return key === 'amount' ? fmtMoney(a.amount) : clean(a[key]); }
+    var blocks = [];
+    for (var bi = 0; bi < list.length; bi += COLS_PER_BLOCK) blocks.push(list.slice(bi, bi + COLS_PER_BLOCK));
+    var isSplit = list.length > 1;
 
     PDFLib.PDFDocument.load(fileBuf, { ignoreEncryption: true }).then(function (pdf) {
       return Promise.all([
         pdf,
         pdf.embedFont(PDFLib.StandardFonts.Helvetica),
-        pdf.embedFont(PDFLib.StandardFonts.HelveticaBold)
+        pdf.embedFont(PDFLib.StandardFonts.HelveticaBold),
+        pdf.embedFont(PDFLib.StandardFonts.TimesRomanBold)
       ]);
     }).then(function (res) {
-      var pdf = res[0], helv = res[1], helvBold = res[2];
+      var pdf = res[0], helv = res[1], helvBold = res[2], timesBold = res[3];
       var page = pdf.getPage(0);
       var pw = page.getWidth(), ph = page.getHeight();
 
-      var S = 0.75;               // stamp scale (smaller footprint)
-      var navy = PDFLib.rgb(0x96 / 255, 0x33 / 255, 0x38 / 255); // SA red: stamp accent
-
-      var dark = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255); // red coding text
+      var red = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255);
       var white = PDFLib.rgb(1, 1, 1);
-      var lightLine = PDFLib.rgb(0.78, 0.78, 0.78);
 
-      function metrics(s) {
-        return { headerH: 20 * s, ahH: 16 * s, rowH: 13.5 * s, divH: 8 * s, padT: 6 * s, padB: 6 * s,
-                 titleSize: 9 * s, ahSize: 8.5 * s, labSize: 8 * s, valSize: 8.5 * s };
-      }
-      function rowsH(rows, s) {
-        var mm = metrics(s), h = mm.headerH + mm.padT + mm.padB;
-        rows.forEach(function (r) { h += r.t === 'ah' ? mm.ahH : r.t === 'row' ? mm.rowH : mm.divH; });
-        return h;
-      }
+      var M = 36;                       // page margin
+      var ROW = 13;                     // line height (pt)
+      var LAB = 9;                      // label size (Times Bold, like the rubber stamp)
+      var VAL = 8.5;                    // value size
+      var PAD = 5;                      // backing padding
+      var BLOCK_GAP = 7;
+      var labW = 82;
+      var colW = isSplit ? 92 : 126;    // single stamp ~2.9in wide, matches the physical stamp
+      var nCols = Math.min(list.length, COLS_PER_BLOCK);
+      var boxW = labW + nCols * colW;
+
       function fitText(text, font, size, maxW) {
         var t = String(text);
         if (font.widthOfTextAtSize(t, size) <= maxW) return t;
         while (t.length > 1 && font.widthOfTextAtSize(t + '...', size) > maxW) t = t.slice(0, -1);
         return t + '...';
       }
+      function blockH() { return LABELS.length * ROW; }
+      var tailRows = (isSplit ? 1 : 0) + 2;   // Total (splits only), Approved by, Date
 
-      var M = 40;                 // page margin for stamp
-      var boxW = 285 * S;
-      var maxH = ph * 0.72;       // max stamp height per page
-
-      // Pack allocation groups into pages at full size; TOTAL + approval ride on the last page.
-      // Allocations are never split across pages, and type never shrinks below full size.
-      var stampPages = [], cur = [];
-      function curH() { return rowsH(cur, S); }
-      allocGroups.forEach(function (g) {
-        if (cur.length && curH() + rowsH(g, S) > maxH) { stampPages.push(cur); cur = []; }
-        cur = cur.concat(g);
+      // Paginate blocks if a huge split would run off the page
+      var maxH = ph * 0.72, stampPages = [], cur = [], curH = 0;
+      blocks.forEach(function (b) {
+        var h = blockH() + (cur.length ? BLOCK_GAP : 0);
+        if (cur.length && curH + h > maxH) { stampPages.push(cur); cur = []; curH = 0; h = blockH(); }
+        cur.push(b); curH += h;
       });
-      if (curH() + rowsH(tailGroup, S) > maxH) { stampPages.push(cur); cur = []; }
-      cur = cur.concat(tailGroup);
       stampPages.push(cur);
 
-      stampPages.forEach(function (rows, pi) {
+      function drawLabel(pg, txt, x, y) { pg.drawText(txt, { x: x, y: y, size: LAB, font: timesBold, color: red }); }
+      function drawCell(pg, txt, x, y, w, bold) {
+        if (txt) pg.drawText(fitText(txt, bold ? helvBold : helv, VAL, w - 8), { x: x + 4, y: y + 1.5, size: VAL, font: bold ? helvBold : helv, color: red });
+        pg.drawLine({ start: { x: x, y: y - 1.5 }, end: { x: x + w - 4, y: y - 1.5 }, color: red, thickness: 0.6, opacity: 0.8 });
+      }
+
+      stampPages.forEach(function (pBlocks, pi) {
         var pg = pi === 0 ? page : pdf.addPage([pw, ph]);
-        var continued = pi > 0;
-        var boxH = rowsH(rows, S);
-        var m = metrics(S);
+        var last = pi === stampPages.length - 1;
+        var h = 0;
+        pBlocks.forEach(function (b, k) { h += blockH() + (k ? BLOCK_GAP : 0); });
+        if (last) h += BLOCK_GAP / 2 + tailRows * ROW;
+        if (pi > 0) h += ROW; // "(continued)" line
         var bx, by;
         if (pi === 0) {
           bx = (pos === 'tl' || pos === 'bl') ? M : pw - M - boxW;
-          by = (pos === 'bl' || pos === 'br') ? M : ph - M - boxH;
-        } else {
-          bx = M; by = ph - M - boxH;
+          by = (pos === 'bl' || pos === 'br') ? M : ph - M - h;
+        } else { bx = M; by = ph - M - h; }
+
+        // light see-through backing so the stamp reads over busy invoices
+        pg.drawRectangle({ x: bx - PAD, y: by - PAD, width: boxW + PAD * 2, height: h + PAD * 2, color: white, opacity: 0.55 });
+
+        var y = by + h;
+        if (pi > 0) { y -= ROW; drawLabel(pg, 'Invoice coding (continued)', bx, y + 3); }
+        pBlocks.forEach(function (b, k) {
+          if (k) y -= BLOCK_GAP;
+          LABELS.forEach(function (L) {
+            y -= ROW;
+            drawLabel(pg, L.label, bx, y + 2);
+            b.forEach(function (a, c) {
+              drawCell(pg, cellVal(a, L.key), bx + labW + c * colW, y + 2, colW, L.key === 'amount');
+            });
+          });
+        });
+        if (last) {
+          y -= BLOCK_GAP / 2;
+          var spanW = boxW - labW;
+          if (isSplit) { y -= ROW; drawLabel(pg, 'Total:', bx, y + 2); drawCell(pg, fmtMoney(allocTotalAmount(list)), bx + labW, y + 2, spanW, true); }
+          y -= ROW; drawLabel(pg, 'Approved by:', bx, y + 2); drawCell(pg, approvedBy, bx + labW, y + 2, spanW);
+          y -= ROW; drawLabel(pg, 'Date:', bx, y + 2); drawCell(pg, dateStr, bx + labW, y + 2, spanW);
         }
-
-        // box
-        pg.drawRectangle({ x: bx, y: by, width: boxW, height: boxH, color: white, opacity: 0.55, borderColor: navy, borderWidth: 1.5 * S });
-        // header
-        pg.drawRectangle({ x: bx, y: by + boxH - m.headerH, width: boxW, height: m.headerH, color: navy, opacity: 0.85 });
-        pg.drawText(continued ? "SOLDIERS' ANGELS - INVOICE CODING (cont.)" : "SOLDIERS' ANGELS - INVOICE CODING", {
-          x: bx + 8 * S, y: by + boxH - m.headerH + (m.headerH - m.titleSize) / 2 + 1,
-          size: m.titleSize, font: helvBold, color: white
-        });
-
-        var y = by + boxH - m.headerH - m.padT;
-        var valX = bx + 102 * S, valMaxW = boxW - 110 * S;
-        rows.forEach(function (r) {
-          if (r.t === 'ah') {
-            y -= m.ahH;
-            pg.drawText('ALLOCATION ' + r.n, { x: bx + 7 * S, y: y + 2, size: m.ahSize, font: helvBold, color: navy });
-          } else if (r.t === 'div') {
-            y -= m.divH;
-            pg.drawLine({ start: { x: bx + 7 * S, y: y + m.divH / 2 }, end: { x: bx + boxW - 7 * S, y: y + m.divH / 2 }, color: lightLine, thickness: 0.75 });
-          } else {
-            y -= m.rowH;
-            pg.drawText(r.label, { x: bx + 7 * S, y: y, size: m.labSize, font: helvBold, color: r.total ? navy : dark });
-            if (r.value) {
-              var txt = fitText(r.value, r.bold ? helvBold : helv, m.valSize, valMaxW);
-              pg.drawText(txt, { x: valX, y: y, size: m.valSize, font: r.bold ? helvBold : helv, color: r.total ? navy : dark });
-            } else {
-              pg.drawLine({ start: { x: valX, y: y - 1 }, end: { x: bx + boxW - 8 * S, y: y - 1 }, color: lightLine, thickness: 0.75 });
-            }
-          }
-        });
       });
       stampPageCount = stampPages.length;
 
