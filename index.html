@@ -42,6 +42,16 @@
   .allocItem .vals { color:#555; line-height:1.5; }
   .allocItem .vals b { color:var(--dark); }
   .linkbtn { background:none; border:none; color:var(--red); cursor:pointer; font-size:13px; padding:2px 6px; text-decoration:underline; }
+  .invTotalRow { display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid #eee; }
+  .invTotalRow .field { max-width:240px; }
+  .invTotalRow .field input { font-weight:bold; }
+  .invSrc { font-size:12.5px; color:#888; padding-bottom:10px; }
+  #matchNote { margin-top:12px; padding:10px 12px; border-radius:8px; font-size:14px; font-weight:bold; display:none; }
+  #matchNote.ok { display:block; background:#e8f5ec; color:#1e7e34; border:1px solid #b9dfc4; }
+  #matchNote.under { display:block; background:#fff6e0; color:#8a5a00; border:1px solid #f0d58c; }
+  #matchNote.over { display:block; background:#fbeaea; color:var(--red); border:1px solid #e9b9bb; }
+  #matchNote.none { display:block; background:#f4f4f4; color:#777; border:1px solid #e2e2e2; font-weight:normal; }
+  #go.warn { background:#b8860b; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:2px solid var(--navy); border-radius:6px; max-width:430px; overflow:hidden; font-size:13px; background:#fff; }
@@ -73,6 +83,10 @@
   <div class="card">
     <h2>2. Code it &mdash; allocations</h2>
     <p class="hint" style="margin-top:0">The <b>Amount</b> is pre-filled from the invoice total when we can spot it in the PDF &mdash; change it if you&rsquo;re not paying the full amount. One invoice, one code? Just fill this in and stamp &mdash; no extra clicks. Splitting across codes? Click <b>&#xFF0B; Add allocation</b> after each one, as many times as you need.</p>
+    <div class="invTotalRow">
+      <label class="field"><span>Invoice total</span><input type="text" id="invTotal" inputmode="decimal" placeholder="0.00"></label>
+      <div class="invSrc" id="invSrc">Read off the invoice when we can. Type over it if it&rsquo;s wrong.</div>
+    </div>
     <div class="grid" id="allocFields"></div>
     <div id="detectNote" class="hint" style="display:none; margin-top:10px;"></div>
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -81,6 +95,7 @@
     </div>
     <div id="allocList"></div>
     <div id="allocTotal" style="display:none"></div>
+    <div id="matchNote"></div>
     <p class="hint">Leave any coding line blank you don't need &mdash; it'll print as an empty line you can fill in by hand. Amount is required on every allocation.</p>
   </div>
   <div class="card">
@@ -156,6 +171,10 @@
   var addBtn = document.getElementById('addAlloc');
   var cancelEditBtn = document.getElementById('cancelEdit');
   var detectNote = document.getElementById('detectNote');
+  var invTotalInput = document.getElementById('invTotal');
+  var invSrc = document.getElementById('invSrc');
+  var matchNote = document.getElementById('matchNote');
+  var mismatchConfirmed = false; // set after one "stamp anyway" warning
   var allocInputs = {}, approvalInputs = {};
 
   function buildFields(list, container, inputs) {
@@ -431,7 +450,54 @@
     return candidates[0].amount;
   }
 
+  function invoiceTotal() {
+    var v = parseAmount(invTotalInput.value);
+    return isNaN(v) ? null : v;
+  }
+
+  function currentList() {
+    var list = allocations.slice();
+    var pending = readAllocForm();
+    if (pending.alloc) list.push(pending.alloc);
+    return list;
+  }
+
+  // Live check: do the allocations add up to the invoice total?
+  function renderMatch() {
+    var inv = invoiceTotal();
+    var list = currentList();
+    var sum = allocTotalAmount(list);
+    var diff = inv == null ? 0 : Math.round((inv - sum) * 100);
+    mismatchConfirmed = false;
+    resetGoLabel();
+    if (!fileBuf) { matchNote.className = ''; matchNote.textContent = ''; return; }
+    if (inv == null) {
+      matchNote.className = 'none';
+      matchNote.textContent = 'Enter the invoice total above and we\u2019ll check your allocations add up to it.';
+    } else if (!list.length) {
+      matchNote.className = 'under';
+      matchNote.textContent = 'Nothing allocated yet. ' + fmtMoney(inv) + ' left to code.';
+    } else if (diff === 0) {
+      matchNote.className = 'ok';
+      matchNote.textContent = '\u2714 Allocations match the invoice total (' + fmtMoney(inv) + ').';
+    } else if (diff > 0) {
+      matchNote.className = 'under';
+      matchNote.textContent = 'Heads up: your allocations total ' + fmtMoney(sum) + ', but the invoice total is ' +
+        fmtMoney(inv) + '. Still ' + fmtMoney(diff / 100) + ' left to allocate.';
+    } else {
+      matchNote.className = 'over';
+      matchNote.textContent = 'Heads up: your allocations total ' + fmtMoney(sum) + ', which is ' +
+        fmtMoney(-diff / 100) + ' OVER the invoice total of ' + fmtMoney(inv) + '.';
+    }
+  }
+
+  function resetGoLabel() {
+    goBtn.textContent = 'Stamp & download';
+    goBtn.classList.remove('warn');
+  }
+
   function renderPreview() {
+    renderMatch();
     // Live preview: saved allocations + whatever is currently typed in the form
     var list = allocations.slice();
     var pending = readAllocForm();
@@ -486,14 +552,14 @@
     if (allocations.length) {
       var label = 'Stamp total so far: ' + fmtMoney(allocTotalAmount(allocations)) +
         ' across ' + allocations.length + ' allocation' + (allocations.length === 1 ? '' : 's');
-      if (detectedTotal != null) {
-        var rem = detectedTotal - allocTotalAmount(allocations);
+      if (false) {
+        var rem = 0;
         label += '  ·  Invoice total (detected): ' + fmtMoney(detectedTotal) +
           '  ·  Remaining: ' + (rem < 0 ? '-' : '') + fmtMoney(Math.abs(rem));
       }
       allocTotal.textContent = label;
       allocTotal.style.display = '';
-    } else if (detectedTotal != null) {
+    } else if (false) {
       allocTotal.textContent = 'Invoice total (detected): ' + fmtMoney(detectedTotal) + ' — nothing allocated yet.';
       allocTotal.style.display = '';
     } else {
@@ -548,6 +614,12 @@
     setStatus('Edit cancelled.');
   });
 
+  invTotalInput.addEventListener('input', function () {
+    invSrc.textContent = invTotalInput.value.trim() ? 'Entered by you (overrides what we read off the invoice).' : 'Read off the invoice when we can. Type over it if it\u2019s wrong.';
+    renderPreview();
+  });
+  document.querySelectorAll('input[name="pos"]').forEach(function (r) { r.addEventListener('change', renderPreview); });
+
   // Live preview as they type
   Object.keys(allocInputs).forEach(function (k) {
     allocInputs[k].addEventListener('input', renderPreview);
@@ -570,6 +642,8 @@
       allocations = [];
       clearAllocForm();
       detectedTotal = null;
+      invTotalInput.value = '';
+      invSrc.textContent = 'Looking for the total on the invoice\u2026';
       setDetectNote('');
       renderAllocList();
       setStatus('Invoice loaded. Add your allocation(s), then stamp it.');
@@ -578,6 +652,12 @@
         return detectInvoiceTotal(pdf);
       }).then(function (total) {
         detectedTotal = total;
+        if (total != null && !invTotalInput.value.trim()) {
+          invTotalInput.value = total.toFixed(2);
+          invSrc.textContent = 'Read off the invoice. Type over it if it\u2019s wrong.';
+        } else if (total == null && !invTotalInput.value.trim()) {
+          invSrc.textContent = 'Couldn\u2019t read a total off this invoice. Type it in so we can check your math.';
+        }
         if (total != null) {
           if (!allocInputs.amount.value.trim()) {
             allocInputs.amount.value = total.toFixed(2);
@@ -622,6 +702,16 @@
     if (pending.error) { setStatus(pending.error, true); return; }
     if (pending.alloc) list.push(pending.alloc);
     if (!list.length) { setStatus('Add at least one allocation first (Amount is required).', true); return; }
+
+    var invT = invoiceTotal();
+    if (invT != null && Math.round((invT - allocTotalAmount(list)) * 100) !== 0 && !mismatchConfirmed) {
+      mismatchConfirmed = true;
+      goBtn.textContent = 'Totals don\u2019t match \u2013 stamp anyway';
+      goBtn.classList.add('warn');
+      setStatus('Your allocations (' + fmtMoney(allocTotalAmount(list)) + ') don\u2019t match the invoice total (' +
+        fmtMoney(invT) + '). Fix them, or click again to stamp anyway (like a partial payment).', true);
+      return;
+    }
 
     var approvedBy = clean(approvalInputs.approvedBy.value.trim());
     var dateStr = clean(fmtDate(approvalInputs.date.value));
@@ -774,11 +864,11 @@
         ' (' + fmtMoney(allocTotalAmount(list)) + ' total)' +
         (stampPageCount > 1 ? ' across ' + stampPageCount + ' pages' : '') +
         '. If the download did not start on its own, click the green button below, then upload the file to SharePoint.');
-      goBtn.disabled = false;
+      goBtn.disabled = false; mismatchConfirmed = false; resetGoLabel();
     }).catch(function (err) {
       console.error(err);
       setStatus('Something went wrong stamping that PDF: ' + (err && err.message ? err.message : err), true);
-      goBtn.disabled = false;
+      goBtn.disabled = false; mismatchConfirmed = false; resetGoLabel();
     });
   });
 
