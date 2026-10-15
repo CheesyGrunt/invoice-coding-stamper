@@ -158,7 +158,8 @@
     <div class="grid">
       <label class="field"><span>Vendor name</span><input type="text" id="fnVendor" placeholder="e.g. Hogsmeade Office Supply"></label>
       <label class="field"><span>Check amount</span><input type="text" id="fnAmount" inputmode="decimal" placeholder="0.00"></label>
-      <label class="field" style="grid-column:1 / -1"><span>Anything else (optional)</span><input type="text" id="fnExtra" placeholder="e.g. invoice #, month, program"></label>
+      <label class="field"><span>Date</span><input type="date" id="fnDate"></label>
+      <label class="field"><span>Anything else (optional)</span><input type="text" id="fnExtra" placeholder="e.g. invoice #, month, program"></label>
     </div>
     <div class="fnPreview"><span>Your file will be named</span><b id="fnShow">(choose an invoice first)</b></div>
   </div>
@@ -711,18 +712,19 @@
   // ---- Download file name: Vendor - Check Amount - Anything else ----
   var fnVendor = document.getElementById('fnVendor'), fnAmount = document.getElementById('fnAmount');
   var fnExtra = document.getElementById('fnExtra'), fnShow = document.getElementById('fnShow');
-  var fnAmountTouched = false;
+  var fnAmountTouched = false, fnDateTouched = false;
+  var fnDate = document.getElementById('fnDate');
   function fnPart(v) {
     // strip characters Windows/SharePoint won't take in a file name
     return String(v || '').replace(/[\\\/:*?"<>|#%{}~&]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '');
   }
   function downloadName() {
     var amt = parseAmount(fnAmount.value);
-    var parts = [fnPart(fnVendor.value), isNaN(amt) ? '' : fmtMoney(amt), fnPart(fnExtra.value)].filter(Boolean);
-    if (!fnPart(fnVendor.value)) {
-      var base = String(fileName || 'invoice.pdf').replace(/\.pdf$/i, '');
-      parts = [fnPart(base) || 'invoice'].concat(parts);
-    }
+    var d = fnDate.value ? fmtDate(fnDate.value).replace(/\//g, '-') : ''; // MM-DD-YYYY (no slashes in file names)
+    var vendor = fnPart(fnVendor.value);
+    if (!vendor) vendor = fnPart(String(fileName || 'invoice.pdf').replace(/\.pdf$/i, '')) || 'invoice';
+    // Finance order: ACH (only if ACH) - Vendor - Check amount - Date - Anything else
+    var parts = [achOn ? 'ACH' : '', vendor, isNaN(amt) ? '' : fmtMoney(amt), d, fnPart(fnExtra.value)].filter(Boolean);
     return parts.join(' - ').slice(0, 150) + '.pdf';
   }
   function renderFileName(list) {
@@ -730,11 +732,13 @@
       var t = allocTotalAmount(list || []);
       fnAmount.value = t > 0 ? t.toFixed(2) : '';
     }
+    if (!fnDateTouched) fnDate.value = approvalInputs.date.value || '';
     fnShow.textContent = fileBuf ? downloadName() : '(choose an invoice first)';
   }
   fnAmount.addEventListener('input', function () { fnAmountTouched = fnAmount.value.trim() !== ''; renderFileName(currentList()); });
   fnVendor.addEventListener('input', function () { renderFileName(currentList()); });
   fnExtra.addEventListener('input', function () { renderFileName(currentList()); });
+  fnDate.addEventListener('input', function () { fnDateTouched = true; renderFileName(currentList()); });
 
   function invoiceTotal() {
     var v = parseAmount(invTotalInput.value);
@@ -937,7 +941,7 @@
       goBtn.disabled = false;
       // New invoice: start fresh so old allocations/coding can't leak onto it
       approvers = {}; apprSig = null; extraApprovals.innerHTML = '';
-      fnVendor.value = ''; fnExtra.value = ''; fnAmount.value = ''; fnAmountTouched = false;
+      fnVendor.value = ''; fnExtra.value = ''; fnAmount.value = ''; fnAmountTouched = false; fnDateTouched = false;
       setAch(false);
       allocations = [];
       clearAllocForm();
