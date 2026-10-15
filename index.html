@@ -68,6 +68,11 @@
   .apprItem .ttl { font-size:13.5px; font-weight:bold; color:var(--navy); margin-bottom:6px; }
   .apprItem .same { font-size:13.5px; display:flex; align-items:center; gap:6px; cursor:pointer; }
   .apprItem .grid { margin-top:10px; }
+  .achBtn { margin-left:auto; background:#fff; color:var(--red); border:2px solid var(--red); border-radius:8px; padding:9px 16px; font-size:14px; font-weight:bold; cursor:pointer; letter-spacing:.3px; }
+  .achBtn:hover { background:#fbeaea; }
+  .achBtn.on { background:var(--red); color:#fff; }
+  .achBtn.on::before { content:"\2714  "; }
+  .stampPreview .achMark { float:right; margin:0 0 6px 14px; border:2px solid #B0101A; outline:1px solid #B0101A; outline-offset:-5px; color:#B0101A; font-family:Georgia, "Times New Roman", serif; font-weight:bold; font-size:18px; padding:6px 12px; letter-spacing:1px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -102,6 +107,7 @@
     <div class="invTotalRow">
       <label class="field"><span>Invoice total</span><input type="text" id="invTotal" inputmode="decimal" placeholder="0.00"></label>
       <div class="invSrc" id="invSrc">Read off the invoice when we can. Type over it if it&rsquo;s wrong.</div>
+      <button type="button" id="achBtn" class="achBtn" aria-pressed="false" title="Paying this one by ACH? Adds an ACH mark next to the coding stamp.">ACH payment</button>
     </div>
     <div class="grid" id="allocFields"></div>
     <div id="detectNote" class="hint" style="display:none; margin-top:10px;"></div>
@@ -486,12 +492,23 @@
   }
 
   // ---- Stamp geometry (shared by the PDF stamp, the placement finder, and the thumbnail) ----
-  var G = { M: 36, ROW: 13, LAB: 9, VAL: 8.5, PAD: 5, GAP: 7, labW: 82, colSplit: 92, colSingle: 126, COLS: 3 };
+  var G = { M: 36, ROW: 13, LAB: 9, VAL: 8.5, PAD: 5, GAP: 7, labW: 82, colSplit: 92, colSingle: 126, COLS: 3,
+            achW: 54, achH: 26, achGap: 10 };
+  var achOn = false;
+  var achBtn = document.getElementById('achBtn');
+  function setAch(on) {
+    achOn = !!on;
+    achBtn.classList.toggle('on', achOn);
+    achBtn.setAttribute('aria-pressed', achOn ? 'true' : 'false');
+  }
+  achBtn.addEventListener('click', function () { setAch(!achOn); renderPreview(); });
   function stampDims(n, perCol) {
     var split = n > 1, cols = Math.min(n, G.COLS), blocks = Math.ceil(n / G.COLS);
     var tail = (split ? 1 : 0) + (perCol ? 0 : 2);
     var h = blocks * (perCol ? 7 : 5) * G.ROW + (blocks - 1) * G.GAP + (tail ? G.GAP / 2 + tail * G.ROW : 0);
-    return { w: G.labW + cols * (split ? G.colSplit : G.colSingle), h: h };
+    var w = G.labW + cols * (split ? G.colSplit : G.colSingle);
+    if (achOn) { w += G.achGap + G.achW; h = Math.max(h, G.achH); }
+    return { w: w, h: h };
   }
   function cornerSpot(pos, w, h, pw, ph) {
     return { x: (pos === 'tl' || pos === 'bl') ? G.M : pw - G.M - w,
@@ -768,6 +785,7 @@
       html += '<tr><th>Date:</th><td colspan="' + span + '">' + (esc(fmtDate(approvalInputs.date.value)) || '&nbsp;') + '</td></tr>';
     }
     html += '</table>';
+    if (achOn) html = '<div class="achMark">ACH</div>' + html;
     preview.innerHTML = html;
   }
 
@@ -879,6 +897,7 @@
       goBtn.disabled = false;
       // New invoice: start fresh so old allocations/coding can't leak onto it
       approvers = {}; apprSig = null; extraApprovals.innerHTML = '';
+      setAch(false);
       allocations = [];
       clearAllocForm();
       detectedTotal = null;
@@ -1035,14 +1054,26 @@
         pBlocks.forEach(function (b, k) { h += blockH() + (k ? BLOCK_GAP : 0); });
         if (last && tailRows) h += BLOCK_GAP / 2 + tailRows * ROW;
         if (pi > 0) h += ROW; // "(continued)" line
+        var withAch = achOn && pi === 0;
+        var fullW = withAch ? boxW + G.achGap + G.achW : boxW;
+        if (withAch) h = Math.max(h, G.achH);
         var bx, by;
         if (pi === 0) {
-          var spot = pos === 'auto' ? bestSpot(boxW, h, pw, ph) : cornerSpot(pos, boxW, h, pw, ph);
+          var spot = pos === 'auto' ? bestSpot(fullW, h, pw, ph) : cornerSpot(pos, fullW, h, pw, ph);
           bx = spot.x; by = spot.y;
         } else { bx = M; by = ph - M - h; }
 
         // light see-through backing so the stamp reads over busy invoices
-        pg.drawRectangle({ x: bx - PAD, y: by - PAD, width: boxW + PAD * 2, height: h + PAD * 2, color: white, opacity: 0.55 });
+        pg.drawRectangle({ x: bx - PAD, y: by - PAD, width: fullW + PAD * 2, height: h + PAD * 2, color: white, opacity: 0.55 });
+
+        if (withAch) {
+          // ACH mark: double-ruled box, top-right of the coding stamp (moves with it)
+          var ax = bx + boxW + G.achGap, ay = by + h - G.achH;
+          pg.drawRectangle({ x: ax, y: ay, width: G.achW, height: G.achH, borderColor: red, borderWidth: 1.6 });
+          pg.drawRectangle({ x: ax + 3, y: ay + 3, width: G.achW - 6, height: G.achH - 6, borderColor: red, borderWidth: 0.6 });
+          var achSize = 15, achTw = timesBold.widthOfTextAtSize('ACH', achSize);
+          pg.drawText('ACH', { x: ax + (G.achW - achTw) / 2, y: ay + (G.achH - achSize * 0.68) / 2, size: achSize, font: timesBold, color: red });
+        }
 
         var y = by + h;
         if (pi > 0) { y -= ROW; drawLabel(pg, 'Invoice coding (continued)', bx, y + 3); }
