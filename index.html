@@ -80,6 +80,8 @@
   .fnPreview { margin-top:12px; background:#f4f6f8; border:1px solid #e1e5e9; border-radius:8px; padding:10px 12px; font-size:13px; color:#666; display:flex; flex-direction:column; gap:3px; word-break:break-all; }
   .fnPreview b { color:var(--navy); font-size:14.5px; }
   .soundToggle { display:inline-flex; align-items:center; gap:6px; margin-top:10px; font-size:13px; color:#777; cursor:pointer; }
+  .restampNote { margin-top:12px; background:#fff6e0; border:1px solid #f0d58c; border-left:4px solid #b8860b; border-radius:8px; padding:10px 12px; font-size:14px; color:#6b4a00; }
+  .restampNote b { color:#4a3300; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -107,6 +109,7 @@
     <h2>1. Choose the invoice PDF</h2>
     <div id="drop">Drop the invoice PDF here, or click to browse<br><span id="fileLabel"></span></div>
     <input type="file" id="file" accept="application/pdf" style="display:none">
+    <div id="restampNote" class="restampNote" style="display:none"></div>
   </div>
   <div class="card">
     <h2>2. Code it &mdash; allocations</h2>
@@ -784,6 +787,63 @@
     } catch (e) { /* sound is a nicety; never block stamping */ }
   }
 
+  // ---- Re-stamp support: the stamp tags itself inside the PDF so it can be found and removed later ----
+  var STAMP_KEY = 'SACodingStamp', DATA_KEY = 'SACodingData', PAGE_KEY = 'SACodingStampPage';
+  function contentRefs(page) {
+    var c = page.node.get(PDFLib.PDFName.of('Contents'));
+    if (!c) return [];
+    return (c instanceof PDFLib.PDFArray) ? c.asArray() : [c];
+  }
+  function refKey(r) { return String(r); }
+  // Looks for a previous stamp from this tool. If found, returns cleaned bytes + the saved coding.
+  function stripPreviousStamp(buf) {
+    return PDFLib.PDFDocument.load(buf, { ignoreEncryption: true }).then(function (pdf) {
+      var found = null, pages = pdf.getPages();
+      pages.forEach(function (pg, i) {
+        var mark = pg.node.get(PDFLib.PDFName.of(STAMP_KEY));
+        if (!mark) return;
+        var drop = {};
+        (mark instanceof PDFLib.PDFArray ? mark.asArray() : [mark]).forEach(function (r) { drop[refKey(r)] = true; });
+        var keep = contentRefs(pg).filter(function (r) { return !drop[refKey(r)]; });
+        pg.node.set(PDFLib.PDFName.of('Contents'), pdf.context.obj(keep));
+        var dataObj = pg.node.get(PDFLib.PDFName.of(DATA_KEY));
+        var data = null;
+        try { data = dataObj ? JSON.parse(dataObj.decodeText()) : null; } catch (e) { data = null; }
+        pg.node.delete(PDFLib.PDFName.of(STAMP_KEY));
+        pg.node.delete(PDFLib.PDFName.of(DATA_KEY));
+        found = found || { data: data, page: i + 1 };
+      });
+      // remove any overflow pages a big split added
+      for (var i = pages.length - 1; i >= 0; i--) {
+        if (pages[i].node.get(PDFLib.PDFName.of(PAGE_KEY))) { pdf.removePage(i); found = found || { data: null, page: 1 }; }
+      }
+      if (!found) return null;
+      return pdf.save().then(function (bytes) {
+        return { buf: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), data: found.data, page: found.page };
+      });
+    }).catch(function () { return null; });
+  }
+  // Put a previous stamp's coding back into the form
+  function applySaved(d) {
+    if (!d) return;
+    allocations = (d.allocations || []).map(function (a) {
+      return { amount: Number(a.amount) || 0, acctCode: a.acctCode || '', acctClass: a.acctClass || '',
+               chargeBudget: a.chargeBudget || '', restricted: a.restricted || '' };
+    });
+    clearAllocForm();
+    if (d.main) { approvalInputs.approvedBy.value = d.main.name || ''; if (d.main.date) approvalInputs.date.value = d.main.date; }
+    approvers = d.approvers || {}; apprSig = null;
+    setAch(!!d.ach);
+    if (d.invTotal) { invTotalInput.value = Number(d.invTotal).toFixed(2); invSrc.textContent = 'From the previous stamp. Type over it if it’s wrong.'; }
+    if (d.fn) {
+      fnVendor.value = d.fn.vendor || ''; fnExtra.value = d.fn.extra || '';
+      if (d.fn.date) { fnDate.value = d.fn.date; fnDateTouched = true; }
+      if (d.fn.amount) { fnAmount.value = d.fn.amount; fnAmountTouched = true; }
+    }
+    if (d.pos) { var r = document.querySelector('input[name="pos"][value="' + d.pos + '"]'); if (r) r.checked = true; }
+    renderAllocList();
+  }
+
   function invoiceTotal() {
     var v = parseAmount(invTotalInput.value);
     return isNaN(v) ? null : v;
@@ -978,7 +1038,15 @@
     if (!/\.pdf$/i.test(file.name)) { setStatus('Please choose a PDF invoice.', true); return; }
     var reader = new FileReader();
     reader.onload = function () {
-      fileBuf = reader.result;
+      stripPreviousStamp(reader.result).then(function (prev) { loadInvoice(file, reader.result, prev); });
+    };
+    reader.onerror = function () { setStatus('Could not read that file.', true); };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function loadInvoice(file, rawBuf, prev) {
+    {
+      fileBuf = prev ? prev.buf : rawBuf;
       fileName = file.name;
       fileLabel.textContent = file.name;
       drop.classList.add('has-file');
@@ -995,8 +1063,23 @@
       setDetectNote('');
       renderAllocList();
       setStatus('Invoice loaded. Add your allocation(s), then stamp it.');
+      var rn = document.getElementById('restampNote');
+      if (prev) {
+        applySaved(prev.data);
+        rn.innerHTML = '<b>This invoice was already stamped' + (prev.data && prev.data.at ? ' on ' + esc(fmtDate(prev.data.at)) : '') +
+          '.</b> We took the old stamp off' + (prev.data ? ' and loaded its coding below' : '') +
+          '. Fix what’s wrong and stamp again &mdash; the new stamp replaces the old one.';
+        rn.style.display = '';
+        setStatus('Previous stamp removed. Update the coding, then stamp it again.');
+      } else { rn.style.display = 'none'; }
       placeWrap.style.display = 'none';
-      scanPage(fileBuf).then(function () { renderPreview(); });
+      var wantPage = prev && prev.data && prev.data.page ? prev.data.page : 1;
+      scanPage(fileBuf).then(function () {
+        if (wantPage > 1 && pdfDoc && wantPage <= pdfDoc.numPages) {
+          pageSel.value = String(wantPage); stampPageNum = wantPage;
+          return renderPage(wantPage);
+        }
+      }).then(function () { renderPreview(); });
       // Hunt for the invoice total in the background; pre-fill Amount (never clobbers typing)
       PDFLib.PDFDocument.load(fileBuf, { ignoreEncryption: true }).then(function (pdf) {
         return detectInvoiceTotal(pdf);
@@ -1008,7 +1091,9 @@
         } else if (total == null && !invTotalInput.value.trim()) {
           invSrc.textContent = 'Couldn\u2019t read a total off this invoice. Type it in so we can check your math.';
         }
-        if (total != null) {
+        if (prev && allocations.length) {
+          setDetectNote('');   // coding came back from the previous stamp; don't add a phantom amount
+        } else if (total != null) {
           if (!allocInputs.amount.value.trim()) {
             allocInputs.amount.value = total.toFixed(2);
           }
@@ -1021,9 +1106,7 @@
       }).catch(function () {
         setDetectNote('Couldn\u2019t spot an invoice total in this PDF — enter the Amount manually.');
       });
-    };
-    reader.onerror = function () { setStatus('Could not read that file.', true); };
-    reader.readAsArrayBuffer(file);
+    }
   }
 
   drop.addEventListener('click', function () { fileInput.click(); });
@@ -1065,6 +1148,14 @@
 
     var approvedBy = clean(approvalInputs.approvedBy.value.trim());
     var dateStr = clean(fmtDate(approvalInputs.date.value));
+    var stampData = {
+      v: 1, at: todayIso(), page: stampPageNum || 1, pos: currentPos(), ach: achOn,
+      invTotal: invoiceTotal(),
+      allocations: list.map(function (a) { return { amount: a.amount, acctCode: a.acctCode, acctClass: a.acctClass, chargeBudget: a.chargeBudget, restricted: a.restricted }; }),
+      main: { name: approvalInputs.approvedBy.value.trim(), date: approvalInputs.date.value },
+      approvers: JSON.parse(JSON.stringify(approvers)),
+      fn: { vendor: fnVendor.value, extra: fnExtra.value, date: fnDateTouched ? fnDate.value : '', amount: fnAmountTouched ? fnAmount.value : '' }
+    };
     var apprGroups = budgetGroups(list), perCol = needsPerColumn(list);
     list = list.map(function (a) { var ap = approvalFor(a, apprGroups); return Object.assign({}, a, { _apName: clean(ap.name), _apDate: clean(ap.date) }); });
     var targetPage = Math.max(0, (stampPageNum || 1) - 1);
@@ -1103,6 +1194,8 @@
       var pdf = res[0], helv = res[1], helvBold = res[2], timesBold = res[3];
       if (targetPage >= pdf.getPageCount()) targetPage = 0;
       var page = pdf.getPage(targetPage);
+      var beforeRefs = {}; contentRefs(page).forEach(function (r) { beforeRefs[refKey(r)] = true; });
+      var addedPages = [];
       var pw = page.getWidth(), ph = page.getHeight();
 
       var red = PDFLib.rgb(0xB0 / 255, 0x10 / 255, 0x1A / 255);
@@ -1139,6 +1232,7 @@
 
       stampPages.forEach(function (pBlocks, pi) {
         var pg = pi === 0 ? page : pdf.insertPage(targetPage + pi, [pw, ph]);
+        if (pi > 0) addedPages.push(pg);
         var last = pi === stampPages.length - 1;
         var h = 0;
         pBlocks.forEach(function (b, k) { h += blockH() + (k ? BLOCK_GAP : 0); });
@@ -1195,6 +1289,12 @@
         }
       });
       stampPageCount = stampPages.length;
+
+      // Tag the stamp so a re-upload can find it, remove it, and reload this coding
+      var stampRefs = contentRefs(page).filter(function (r) { return !beforeRefs[refKey(r)]; });
+      page.node.set(PDFLib.PDFName.of(STAMP_KEY), pdf.context.obj(stampRefs));
+      page.node.set(PDFLib.PDFName.of(DATA_KEY), PDFLib.PDFHexString.fromText(JSON.stringify(stampData)));
+      addedPages.forEach(function (ap) { ap.node.set(PDFLib.PDFName.of(PAGE_KEY), PDFLib.PDFBool.True); });
 
       return pdf.save();
     }).then(function (bytes) {
