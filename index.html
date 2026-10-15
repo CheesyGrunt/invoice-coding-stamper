@@ -79,6 +79,7 @@
   .stampPreview .achMark { float:right; margin:0 0 6px 14px; border:2px solid #B0101A; outline:1px solid #B0101A; outline-offset:-5px; color:#B0101A; font-family:Georgia, "Times New Roman", serif; font-weight:bold; font-size:18px; padding:6px 12px; letter-spacing:1px; }
   .fnPreview { margin-top:12px; background:#f4f6f8; border:1px solid #e1e5e9; border-radius:8px; padding:10px 12px; font-size:13px; color:#666; display:flex; flex-direction:column; gap:3px; word-break:break-all; }
   .fnPreview b { color:var(--navy); font-size:14.5px; }
+  .soundToggle { display:inline-flex; align-items:center; gap:6px; margin-top:10px; font-size:13px; color:#777; cursor:pointer; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -169,6 +170,7 @@
   </div>
   <div class="card">
     <button id="go" disabled>Stamp &amp; download</button>
+    <label class="soundToggle"><input type="checkbox" id="soundOn" checked> Stamp sound</label>
     <div class="status" id="status"></div>
     <div id="dlWrap"></div>
     <p class="hint">Upload the downloaded file (named in step 6) to SharePoint, not the original invoice.</p>
@@ -744,6 +746,44 @@
   fnExtra.addEventListener('input', function () { renderFileName(currentList()); });
   fnDate.addEventListener('input', function () { fnDateTouched = true; renderFileName(currentList()); });
 
+  // ---- Stamp sound: a rubber-stamp "ka-chunk" made with Web Audio (no audio file) ----
+  var soundOn = document.getElementById('soundOn');
+  try { if (localStorage.getItem('stampSound') === 'off') soundOn.checked = false; } catch (e) {}
+  soundOn.addEventListener('change', function () {
+    try { localStorage.setItem('stampSound', soundOn.checked ? 'on' : 'off'); } catch (e) {}
+    if (soundOn.checked) playStamp();
+  });
+  var audioCtx = null;
+  function playStamp() {
+    if (!soundOn.checked) return;
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      audioCtx = audioCtx || new AC();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var ac = audioCtx, t = ac.currentTime + 0.01;
+      function hit(at, gainPeak, lp, len) {
+        // short burst of filtered noise = the press / clack
+        var n = Math.floor(ac.sampleRate * len), buf = ac.createBuffer(1, n, ac.sampleRate), d = buf.getChannelData(0);
+        for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3);
+        var src = ac.createBufferSource(); src.buffer = buf;
+        var f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = lp;
+        var g = ac.createGain(); g.gain.setValueAtTime(gainPeak, at);
+        src.connect(f); f.connect(g); g.connect(ac.destination); src.start(at);
+      }
+      function thump(at, freq, peak, len) {
+        // low body thud as the stamp lands on the desk
+        var o = ac.createOscillator(), g = ac.createGain();
+        o.type = 'sine'; o.frequency.setValueAtTime(freq, at); o.frequency.exponentialRampToValueAtTime(freq * 0.45, at + len);
+        g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(peak, at + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, at + len);
+        o.connect(g); g.connect(ac.destination); o.start(at); o.stop(at + len + 0.02);
+      }
+      hit(t, 0.35, 2500, 0.03);          // "ka" - mechanism clicks down
+      hit(t + 0.07, 0.9, 900, 0.09);     // "chunk" - stamp hits the paper
+      thump(t + 0.07, 150, 0.9, 0.16);
+    } catch (e) { /* sound is a nicety; never block stamping */ }
+  }
+
   function invoiceTotal() {
     var v = parseAmount(invTotalInput.value);
     return isNaN(v) ? null : v;
@@ -1030,6 +1070,7 @@
     var targetPage = Math.max(0, (stampPageNum || 1) - 1);
     var pos = document.querySelector('input[name="pos"]:checked').value;
 
+    playStamp();
     setStatus('Stamping…');
     goBtn.disabled = true;
     var stampPageCount = 1;
