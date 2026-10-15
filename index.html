@@ -73,6 +73,8 @@
   .achBtn.on { background:var(--red); color:#fff; }
   .achBtn.on::before { content:"\2714  "; }
   .stampPreview .achMark { float:right; margin:0 0 6px 14px; border:2px solid #B0101A; outline:1px solid #B0101A; outline-offset:-5px; color:#B0101A; font-family:Georgia, "Times New Roman", serif; font-weight:bold; font-size:18px; padding:6px 12px; letter-spacing:1px; }
+  .fnPreview { margin-top:12px; background:#f4f6f8; border:1px solid #e1e5e9; border-radius:8px; padding:10px 12px; font-size:13px; color:#666; display:flex; flex-direction:column; gap:3px; word-break:break-all; }
+  .fnPreview b { color:var(--navy); font-size:14.5px; }
   #allocTotal { margin-top:12px; font-size:15px; font-weight:bold; color:var(--navy); }
   #allocList:empty { display:none; }
   .stampPreview { border:1px dashed #d9a3a6; color:#B0101A; border-radius:6px; padding:10px 12px; overflow-x:auto; font-size:13px; background:#fff; display:inline-block; max-width:100%; }
@@ -152,10 +154,19 @@
     </div>
   </div>
   <div class="card">
+    <h2>6. File name</h2>
+    <div class="grid">
+      <label class="field"><span>Vendor name</span><input type="text" id="fnVendor" placeholder="e.g. Hogsmeade Office Supply"></label>
+      <label class="field"><span>Check amount</span><input type="text" id="fnAmount" inputmode="decimal" placeholder="0.00"></label>
+      <label class="field" style="grid-column:1 / -1"><span>Anything else (optional)</span><input type="text" id="fnExtra" placeholder="e.g. invoice #, month, program"></label>
+    </div>
+    <div class="fnPreview"><span>Your file will be named</span><b id="fnShow">(choose an invoice first)</b></div>
+  </div>
+  <div class="card">
     <button id="go" disabled>Stamp &amp; download</button>
     <div class="status" id="status"></div>
     <div id="dlWrap"></div>
-    <p class="hint">The download is named <b>STAMPED_&lt;original&gt;.pdf</b> &mdash; upload that file to SharePoint.</p>
+    <p class="hint">Upload the downloaded file (named in step 6) to SharePoint, not the original invoice.</p>
   </div>
   <footer class="mark">
     <div class="mm"><svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 1.5 4.5 13.2h6.2L9.3 22.5l10.2-12.6h-6.4z"/></svg>Mischief managed.</div>
@@ -697,6 +708,34 @@
     });
   }
 
+  // ---- Download file name: Vendor - Check Amount - Anything else ----
+  var fnVendor = document.getElementById('fnVendor'), fnAmount = document.getElementById('fnAmount');
+  var fnExtra = document.getElementById('fnExtra'), fnShow = document.getElementById('fnShow');
+  var fnAmountTouched = false;
+  function fnPart(v) {
+    // strip characters Windows/SharePoint won't take in a file name
+    return String(v || '').replace(/[\\\/:*?"<>|#%{}~&]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '');
+  }
+  function downloadName() {
+    var amt = parseAmount(fnAmount.value);
+    var parts = [fnPart(fnVendor.value), isNaN(amt) ? '' : fmtMoney(amt), fnPart(fnExtra.value)].filter(Boolean);
+    if (!fnPart(fnVendor.value)) {
+      var base = String(fileName || 'invoice.pdf').replace(/\.pdf$/i, '');
+      parts = [fnPart(base) || 'invoice'].concat(parts);
+    }
+    return parts.join(' - ').slice(0, 150) + '.pdf';
+  }
+  function renderFileName(list) {
+    if (!fnAmountTouched) {
+      var t = allocTotalAmount(list || []);
+      fnAmount.value = t > 0 ? t.toFixed(2) : '';
+    }
+    fnShow.textContent = fileBuf ? downloadName() : '(choose an invoice first)';
+  }
+  fnAmount.addEventListener('input', function () { fnAmountTouched = fnAmount.value.trim() !== ''; renderFileName(currentList()); });
+  fnVendor.addEventListener('input', function () { renderFileName(currentList()); });
+  fnExtra.addEventListener('input', function () { renderFileName(currentList()); });
+
   function invoiceTotal() {
     var v = parseAmount(invTotalInput.value);
     return isNaN(v) ? null : v;
@@ -747,6 +786,7 @@
     renderMatch();
     // Mirrors the PDF stamp: labels once on the left, one value column per allocation
     var list = currentList();
+    renderFileName(list);
     renderApprovals(list);
     var groups = budgetGroups(list), perCol = needsPerColumn(list);
     drawPlacement(list.length, perCol);
@@ -897,6 +937,7 @@
       goBtn.disabled = false;
       // New invoice: start fresh so old allocations/coding can't leak onto it
       approvers = {}; apprSig = null; extraApprovals.innerHTML = '';
+      fnVendor.value = ''; fnExtra.value = ''; fnAmount.value = ''; fnAmountTouched = false;
       setAch(false);
       allocations = [];
       clearAllocForm();
@@ -1111,7 +1152,7 @@
       var blob = new Blob([bytes], { type: 'application/pdf' });
       if (lastUrl) { try { URL.revokeObjectURL(lastUrl); } catch (e) {} }
       lastUrl = URL.createObjectURL(blob);
-      var dlName = 'STAMPED_' + fileName;
+      var dlName = downloadName();
       var dlWrap = document.getElementById('dlWrap');
       dlWrap.innerHTML = '';
       var dl = document.createElement('a');
